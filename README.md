@@ -14,6 +14,8 @@ redirect version, as suggested in the answers to
 <a href="http://stackoverflow.com/questions/31547947/packages-not-loading-after-installing-visual-studio-2015-rtm">
 this Stackoverflow question.</a>
 
+!(Screenshot.png)
+
 Why I wrote it
 --------------
 
