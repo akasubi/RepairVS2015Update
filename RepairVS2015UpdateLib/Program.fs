@@ -3,13 +3,15 @@
 open System
 open System.IO
 open System.Linq
+open System.Drawing
 open System.Windows
 open System.Windows.Controls
+open System.Windows.Interop
+open System.Windows.Media.Imaging
 open System.Windows.Shapes
 open System.Xml.Linq
 
-
-let msgBoxTitle = "VS2015 update config repair"
+let appTitle = "VS2015 update config repair"
 
 let vs2015LocalDataDir = 
     Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -57,14 +59,14 @@ let fixDevEnvConfig cfgFullPath cfgXdoc versionNo =
 let callAndReport f (window: Window) _ =
     let (result, msg) = f ()
     let image = if result then MessageBoxImage.Information else MessageBoxImage.Error
-    MessageBox.Show(msg, msgBoxTitle, MessageBoxButton.OK, image) |> ignore
+    MessageBox.Show(msg, appTitle, MessageBoxButton.OK, image) |> ignore
     if result then window.Close()
 
 let deleteCacheFixConfigAndReport cfgFullPath cfgXdoc versionNo (window: Window) =
     let (result1, msg1) = deleteComponentModelCache ()
     let (result2, msg2) = fixDevEnvConfig cfgFullPath cfgXdoc versionNo
     let image = if result1 && result2 then MessageBoxImage.Information else MessageBoxImage.Error
-    MessageBox.Show(msg1 + "\n\n" + msg2, msgBoxTitle, MessageBoxButton.OK, image) |> ignore
+    MessageBox.Show(msg1 + "\n\n" + msg2, appTitle, MessageBoxButton.OK, image) |> ignore
     if result1 && result2 then window.Close()
 
 let openStackOverflowPage _ =
@@ -76,7 +78,10 @@ type UI =
     { Window: Window
       VersionInput: TextBox }
 
-let createUI cfgFullPath cfgXdoc = 
+let createUI (icon: Icon) cfgFullPath cfgXdoc = 
+    let iconAsImageSource = 
+        Imaging.CreateBitmapSourceFromHIcon(icon.Handle, Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions())
+
     let controlStack = StackPanel(Orientation = Orientation.Vertical, Margin = Thickness(10.))
     let spacing = Thickness(0., 0., 0., 10.)
 
@@ -87,7 +92,10 @@ let createUI cfgFullPath cfgXdoc =
         button.Click.Add f
         controlStack.Children.Add(button) |> ignore
 
-    let window = Window(Content = controlStack, SizeToContent = SizeToContent.WidthAndHeight)
+    let window = Window(Content = controlStack,
+                        Icon = iconAsImageSource,
+                        SizeToContent = SizeToContent.WidthAndHeight,
+                        Title = appTitle)
 
     let addVersionOutput() =
         let presentNewVer =
@@ -119,14 +127,14 @@ let createUI cfgFullPath cfgXdoc =
       VersionInput = versionInput }
 
 
-let main() = 
+let main(icon: Icon) = 
     let cfgFName = "devenv.exe.config"
     let cfgFullPath = Path.Combine(vs2015LocalDataDir, cfgFName)
     let cfgXdoc = XDocument.Load(cfgFullPath)
     let settings = AppSettings.read()
 
     let app = Application()
-    let ui = createUI cfgFullPath cfgXdoc
+    let ui = createUI icon cfgFullPath cfgXdoc
     ui.VersionInput.Text <- settings.CorrectCollectionsImmutableVersion
 
     app.Run(ui.Window) |> ignore

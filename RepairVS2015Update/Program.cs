@@ -1,4 +1,6 @@
 ﻿using System;
+using System.Drawing;
+using System.Reflection;
 
 // The sole purpose of this C# project is to give the program an application icon.
 // For some reason, this sometimes cuase UAC to kick in for an F# executable.
@@ -11,7 +13,10 @@ namespace RepairVS2015Update
         [STAThread]
         static void Main(string[] args)
         {
-            RepairVS2015UpdateLib.main();
+            var icon = Icon.ExtractAssociatedIcon(Assembly.GetEntryAssembly().ManifestModule.Name);
+
+            RepairVS2015UpdateLib.main(icon);
         }
     }
 }
+
