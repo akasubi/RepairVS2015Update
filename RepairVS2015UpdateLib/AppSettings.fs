@@ -17,8 +17,7 @@ type Redirection =
 
 
 type AppSettingsData =
-    { AssemblyDirectories: string list
-      Redirections: Redirection list
+    { Redirections: Redirection list
     }
 
 
@@ -44,10 +43,7 @@ let read() =
         JsonConvert.DeserializeObject<AppSettingsData>(json)
     else
         let data =
-            { AssemblyDirectories = 
-                [@"C:\Program Files (x86)\Microsoft Visual Studio 14.0\Common7\IDE\PrivateAssemblies"
-                 @"C:\Program Files (x86)\Microsoft Visual Studio 14.0\Common7\IDE\PublicAssemblies"] 
-              Redirections =
+            { Redirections =
                 [ { AssemblyName = "System.Collections.Immutable"; OldVersion = null }
                   { AssemblyName = "Microsoft.VisualStudio.ProjectSystem.V14Only"; OldVersion = "14.0.0.0" }
                 ]

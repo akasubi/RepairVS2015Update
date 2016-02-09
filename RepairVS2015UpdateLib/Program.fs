@@ -17,9 +17,18 @@ open System.Windows.Data
 
 let appTitle = "VS2015 update config repair"
 
+let asmBindingNs = "urn:schemas-microsoft-com:asm.v1"
+
+
 let vs2015LocalDataDir = 
     Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                  @"Microsoft\VisualStudio\14.0")
+
+let vs2015InstallDir =
+    let registryKeyString = sprintf @"SOFTWARE%s\Microsoft\VisualStudio\14.0"
+                                    (if not Environment.Is64BitProcess then @"\Wow6432Node" else "")
+    use localMachineKey = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(registryKeyString)
+    localMachineKey.GetValue("InstallDir") :?> string
 
 
 let deleteComponentModelCache () =
@@ -32,8 +41,31 @@ let deleteComponentModelCache () =
     else (true, "ComponentModelCache directory doesn't exist.")
 
 
+let getProbeDirectories (xdoc: XDocument) =
+    let pathStr =
+        xdoc.Root
+            .Element(XName.Get("runtime"))
+            .Element(XName.Get("assemblyBinding", asmBindingNs))
+            .Element(XName.Get("probing", asmBindingNs))
+            .Attribute(XName.Get("privatePath"))
+            .Value
+    pathStr.Split(';')
+    |> Array.toList
+    |> List.map (fun s -> Path.Combine(vs2015InstallDir, s))
+
+
+let getDependentAssemblies (xdoc: XDocument) =
+    let nameAttrs =
+        xdoc.Root
+            .Element(XName.Get("runtime"))
+            .Element(XName.Get("assemblyBinding", asmBindingNs))
+            .Elements(XName.Get("dependentAssembly", asmBindingNs))
+            .Elements(XName.Get("assemblyIdentity", asmBindingNs))
+            .Attributes(XName.Get("name"))
+    nameAttrs |> Seq.map (fun a -> a.Value)
+
+
 let getBindingRedirectNewVer (xdoc: XDocument) assemblyIdentity =
-    let asmBindingNs = "urn:schemas-microsoft-com:asm.v1"
     try
         xdoc.Root
             .Element(XName.Get("runtime"))
@@ -51,15 +83,15 @@ type AssemblyInfo =
     { Version: string
       PKToken: string }
 
-let getAssemblyInfos (settings: AppSettings.AppSettingsData) =
+let getAssemblyInfos (settings: AppSettings.AppSettingsData) assemblyDirectories =
     let loadAsm name =
-        settings.AssemblyDirectories |> List.tryPick (fun dir ->
+        assemblyDirectories |> List.tryPick (fun dir ->
             let fName = Path.Combine(dir, name + ".dll")
             if File.Exists(fName) 
             then Some (Assembly.ReflectionOnlyLoadFrom(fName))
             else None)
 
-    let asmInfos =            
+    let asmInfos =
         [for r in settings.Redirections ->
             match loadAsm r.AssemblyName with
             | Some asm ->
@@ -85,7 +117,8 @@ type BindingRedirectChange =
     }
 
 let determineRedirectChanges (cfgXdoc: XDocument) settings =
-    let asmInfos = getAssemblyInfos settings
+    let asmDirs = getProbeDirectories cfgXdoc
+    let asmInfos = getAssemblyInfos settings asmDirs
     [for (redir, asmInfoOpt) in asmInfos ->
         match asmInfoOpt with
         | None ->
@@ -222,7 +255,12 @@ let createUI (icon: Icon) cfgFullPath cfgXdoc =
 
     let mutable bindingRedirectChanges = []
     let loadSettings _ =
-        let settings = AppSettings.read()
+        let asmNames = getDependentAssemblies cfgXdoc
+        let settings: AppSettings.AppSettingsData =
+            { Redirections =
+                [for i in asmNames -> { AssemblyName = i; OldVersion = null } ]
+            }
+//        let settings = AppSettings.read()
         bindingRedirectChanges <- determineRedirectChanges cfgXdoc settings
         let list = assemblyDisplayList cfgXdoc bindingRedirectChanges
         listView.ItemsSource <- list
