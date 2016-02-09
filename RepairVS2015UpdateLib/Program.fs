@@ -4,12 +4,16 @@ open System
 open System.IO
 open System.Linq
 open System.Drawing
+open System.Reflection
+open System.Text.RegularExpressions
 open System.Windows
 open System.Windows.Controls
 open System.Windows.Interop
 open System.Windows.Media.Imaging
 open System.Windows.Shapes
 open System.Xml.Linq
+open System.Windows.Data
+
 
 let appTitle = "VS2015 update config repair"
 
@@ -28,7 +32,7 @@ let deleteComponentModelCache () =
     else (true, "ComponentModelCache directory doesn't exist.")
 
 
-let getImmutableCollectionNewVer (xdoc: XDocument) =
+let getBindingRedirectNewVer (xdoc: XDocument) assemblyIdentity =
     let asmBindingNs = "urn:schemas-microsoft-com:asm.v1"
     try
         xdoc.Root
@@ -36,47 +40,163 @@ let getImmutableCollectionNewVer (xdoc: XDocument) =
             .Element(XName.Get("assemblyBinding", asmBindingNs))
             .Elements(XName.Get("dependentAssembly", asmBindingNs))
             .Single(fun e -> e.Element(XName.Get("assemblyIdentity", asmBindingNs))
-                                        .Attribute(XName.Get("name")).Value = "System.Collections.Immutable")
+                                            .Attribute(XName.Get("name")).Value = assemblyIdentity)
             .Element(XName.Get("bindingRedirect", asmBindingNs))
             .Attribute(XName.Get("newVersion"))
         |> Some
     with _ -> None
 
 
-let fixDevEnvConfig cfgFullPath cfgXdoc versionNo =
-    match getImmutableCollectionNewVer cfgXdoc with
-    | Some newVer ->
-        if newVer.Value <> versionNo then 
-            File.Copy(cfgFullPath, cfgFullPath + ".bak", true)
-            newVer.Value <- versionNo
-            cfgXdoc.Save(cfgFullPath)
-            (true, "Binding redirection was updated.")
+type AssemblyInfo =
+    { Version: string
+      PKToken: string }
+
+let getAssemblyInfos (settings: AppSettings.AppSettingsData) =
+    let loadAsm name =
+        settings.AssemblyDirectories |> List.tryPick (fun dir ->
+            let fName = Path.Combine(dir, name + ".dll")
+            if File.Exists(fName) 
+            then Some (Assembly.ReflectionOnlyLoadFrom(fName))
+            else None)
+
+    let asmInfos =            
+        [for r in settings.Redirections ->
+            match loadAsm r.AssemblyName with
+            | Some asm ->
+                let matches = Regex.Match(asm.FullName, ".*Version=([^,]*),.*PublicKeyToken=(.*)")
+                let ver = matches.Groups.[1].Value
+                let pkToken = matches.Groups.[2].Value
+                (r, Some { Version = ver; PKToken = pkToken })
+            | None -> (r, None)
+        ]
+    asmInfos
+
+
+type BindingRedirectAction =
+    | Add
+    | Modify
+    | Ignore of string  // string = reason for ignore.
+
+type BindingRedirectChange =
+    { Redirection: AppSettings.Redirection
+      AssemblyInfo: AssemblyInfo option
+      NewVersionAttr: XAttribute option
+      Action: BindingRedirectAction
+    }
+
+let determineRedirectChanges (cfgXdoc: XDocument) settings =
+    let asmInfos = getAssemblyInfos settings
+    [for (redir, asmInfoOpt) in asmInfos ->
+        match asmInfoOpt with
+        | None ->
+            { Redirection = redir
+              AssemblyInfo = None
+              NewVersionAttr = None
+              Action = Ignore "Assembly file not found" }
+        | Some asmInfo ->
+            let presentNewVerOpt = getBindingRedirectNewVer cfgXdoc redir.AssemblyName
+            match presentNewVerOpt with
+            | Some presentNewVer ->
+                let action =
+                    if presentNewVer.Value = asmInfo.Version
+                    then Ignore "newVersion already correct"
+                    else Modify
+                { Redirection = redir
+                  AssemblyInfo = Some asmInfo
+                  NewVersionAttr = presentNewVerOpt
+                  Action = action }
+            | None ->
+                let action =
+                    if isNull redir.OldVersion 
+                    then Ignore "Missing oldVersion setting"
+                    else Add
+                { Redirection = redir
+                  AssemblyInfo = Some asmInfo
+                  NewVersionAttr = None
+                  Action = action }
+    ]
+
+
+let applyBindingRedirectChanges cfgFullPath (cfgXdoc: XDocument) (changes: BindingRedirectChange list) =
+    let rec bakFName n =
+        if not (File.Exists(cfgFullPath + ".bak")) then cfgFullPath + ".bak"
         else
-            (true, "No change to binding redirection needed.")
-    | None -> (false, "System.Collections.Immutable binding redirection not found.")
+            let tryName = sprintf "%s%s%d" cfgFullPath ".bak" n
+            if File.Exists(tryName)
+            then bakFName (n+1)
+            else tryName
+
+    for change in changes do
+        match change.Action with
+        | Add -> ()
+        | Modify ->
+            change.NewVersionAttr.Value.Value <- change.AssemblyInfo.Value.Version            
+        | Ignore _ -> ()
+
+    if changes |> List.exists (fun c -> match c.Action with Add | Modify -> true | Ignore _ -> false) then
+        File.Copy(cfgFullPath, bakFName 1, true)
+        cfgXdoc.Save(cfgFullPath)
+        (true, "Binding redirections where updated.")
+    else (true, "No binding redirection update needed.")
 
 
-let callAndReport f (window: Window) _ =
-    let (result, msg) = f ()
-    let image = if result then MessageBoxImage.Information else MessageBoxImage.Error
-    MessageBox.Show(msg, appTitle, MessageBoxButton.OK, image) |> ignore
-    if result then window.Close()
+// Display data for the grid view
+type DisplayChange =
+    { AssemblyName: string
+      OldVer: string
+      NewVer: string
+      ShouldBe: string 
+      Action: string }
 
-let deleteCacheFixConfigAndReport cfgFullPath cfgXdoc versionNo (window: Window) =
+
+let assemblyDisplayList cfgXdoc bindingRedirectChanges =
+    [for i in bindingRedirectChanges ->
+        { AssemblyName = i.Redirection.AssemblyName
+          OldVer = i.Redirection.OldVersion
+          NewVer = 
+            match i.NewVersionAttr with
+            | Some a -> a.Value
+            | None -> ""
+          ShouldBe =
+            match i.AssemblyInfo with
+            | Some info -> info.Version
+            | None -> ""
+          Action =
+            match i.Action with
+            | Add -> "Add bindingRedirect"
+            | Modify -> "Modify bindingRedirect"
+            | Ignore s -> "Ignore: " + s
+        } 
+    ]
+
+
+let applyFixes cfgFullPath cfgXdoc bindingRedirectChanges (window: Window) =
     let (result1, msg1) = deleteComponentModelCache ()
-    let (result2, msg2) = fixDevEnvConfig cfgFullPath cfgXdoc versionNo
+    let (result2, msg2) = applyBindingRedirectChanges cfgFullPath cfgXdoc bindingRedirectChanges
     let image = if result1 && result2 then MessageBoxImage.Information else MessageBoxImage.Error
     MessageBox.Show(msg1 + "\n\n" + msg2, appTitle, MessageBoxButton.OK, image) |> ignore
     if result1 && result2 then window.Close()
 
-let openStackOverflowPage _ =
-    System.Diagnostics.Process.Start("http://stackoverflow.com/questions/31547947/packages-not-loading-after-installing-visual-studio-2015-rtm")    
+
+let editSettingsFile _ =
+    System.Diagnostics.Process.Start(AppSettings.settingsPath)
     |> ignore
 
 
-type UI =
-    { Window: Window
-      VersionInput: TextBox }
+let openStackOverflowPage _ =
+    System.Diagnostics.Process.Start("http://stackoverflow.com/questions/31547947/packages-not-loading-after-installing-visual-studio-2015-rtm")
+    |> ignore
+
+
+let assemblyListView margin =
+    let gv = GridView()
+    GridViewColumn(Header="Assembly", DisplayMemberBinding = new Binding("AssemblyName")) |> gv.Columns.Add 
+    GridViewColumn(Header="oldVersion", DisplayMemberBinding = new Binding("OldVer")) |> gv.Columns.Add
+    GridViewColumn(Header="newVersion", DisplayMemberBinding = new Binding("NewVer")) |> gv.Columns.Add
+    GridViewColumn(Header="newVersion should be", DisplayMemberBinding = new Binding("ShouldBe")) |> gv.Columns.Add
+    GridViewColumn(Header="Action", DisplayMemberBinding = new Binding("Action")) |> gv.Columns.Add
+    ListView(Margin = margin, View = gv)
+
 
 let createUI (icon: Icon) cfgFullPath cfgXdoc = 
     let iconAsImageSource = 
@@ -97,47 +217,36 @@ let createUI (icon: Icon) cfgFullPath cfgXdoc =
                         SizeToContent = SizeToContent.WidthAndHeight,
                         Title = appTitle)
 
-    let addVersionOutput() =
-        let presentNewVer =
-            match getImmutableCollectionNewVer cfgXdoc with
-            | Some ver -> ver.Value
-            | None -> "Value not set."
-        controlStack.Children.Add(Label(Content = "Collections.Immutable newVersion is: " + presentNewVer,
-                                        Margin = spacing)) |> ignore
+    let listView = assemblyListView spacing
+    controlStack.Children.Add(listView) |> ignore
 
-    let addVersionInput() =
-        let sp = StackPanel(Orientation = Orientation.Horizontal, Margin = spacing)
-        controlStack.Children.Add(sp) |> ignore
-        sp.Children.Add(Label(Content = "Collections.Immutable newVersion should be: ")) |> ignore
-        let textBox = TextBox(VerticalContentAlignment = VerticalAlignment.Center, Width = 100.)
-        sp.Children.Add(textBox) |> ignore
-        textBox
+    let mutable bindingRedirectChanges = []
+    let loadSettings _ =
+        let settings = AppSettings.read()
+        bindingRedirectChanges <- determineRedirectChanges cfgXdoc settings
+        let list = assemblyDisplayList cfgXdoc bindingRedirectChanges
+        listView.ItemsSource <- list
+        listView.Items.Refresh()
 
-    addVersionOutput()
-    let versionInput = addVersionInput()
-    addButton (callAndReport deleteComponentModelCache window) "_Delete ComponentModelCache"
-    addButton (callAndReport (fun _ -> fixDevEnvConfig cfgFullPath cfgXdoc versionInput.Text) window) 
-                             "_Fix Collections.Immutable\nnewVersion binding redirect"
-    addButton (fun _ -> deleteCacheFixConfigAndReport cfgFullPath cfgXdoc versionInput.Text window) 
-              "Do _both of the above"
+    loadSettings()
+
+    addButton editSettingsFile "_Edit settings file"
+    addButton loadSettings "_Reload settings file"
+    controlStack.Children.Add(Rectangle(Fill = Media.Brushes.Black, Height = 2., Margin = spacing)) |> ignore
+    addButton (fun _ -> applyFixes cfgFullPath cfgXdoc bindingRedirectChanges window) 
+              "_Apply binding redirection fixes and delete ComponentModelCache"
     controlStack.Children.Add(Rectangle(Fill = Media.Brushes.Black, Height = 2., Margin = spacing)) |> ignore
     addButton openStackOverflowPage "Open _Stackoverflow question about this problem"
 
-    { Window = window
-      VersionInput = versionInput }
+    window
 
 
 let main(icon: Icon) = 
     let cfgFName = "devenv.exe.config"
     let cfgFullPath = Path.Combine(vs2015LocalDataDir, cfgFName)
     let cfgXdoc = XDocument.Load(cfgFullPath)
-    let settings = AppSettings.read()
 
     let app = Application()
-    let ui = createUI icon cfgFullPath cfgXdoc
-    ui.VersionInput.Text <- settings.CorrectCollectionsImmutableVersion
+    let window = createUI icon cfgFullPath cfgXdoc
 
-    app.Run(ui.Window) |> ignore
-
-    settings.CorrectCollectionsImmutableVersion <- ui.VersionInput.Text
-    AppSettings.write settings
+    app.Run(window) |> ignore

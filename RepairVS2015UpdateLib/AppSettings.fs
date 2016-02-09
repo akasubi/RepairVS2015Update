@@ -10,8 +10,16 @@ let private vendorName = "wezeku"
 let private appName    = "RepairVS2015Update"
 
 
-type AppSettingsData() =
-    member val CorrectCollectionsImmutableVersion = "" with get, set
+type Redirection =
+    { AssemblyName: string
+      OldVersion: string
+    }
+
+
+type AppSettingsData =
+    { AssemblyDirectories: string list
+      Redirections: Redirection list
+    }
 
 
 let private settingsFolder = 
@@ -20,8 +28,14 @@ let private settingsFolder =
         vendorName,
         appName)
 
-let private settingsPath =
+let settingsPath =
     Path.Combine(settingsFolder, appName + ".json")
+
+
+let private write (data: AppSettingsData) =
+    let json = JsonConvert.SerializeObject(data, Formatting.Indented)
+    Directory.CreateDirectory(settingsFolder) |> ignore
+    File.WriteAllText(settingsPath, json)
 
 
 let read() =
@@ -29,10 +43,14 @@ let read() =
         let json = File.ReadAllText(settingsPath)
         JsonConvert.DeserializeObject<AppSettingsData>(json)
     else
-        AppSettingsData(CorrectCollectionsImmutableVersion = "1.1.37.0")
-
-
-let write (data: AppSettingsData) =
-    let json = JsonConvert.SerializeObject(data)
-    Directory.CreateDirectory(settingsFolder) |> ignore
-    File.WriteAllText(settingsPath, json)
+        let data =
+            { AssemblyDirectories = 
+                [@"C:\Program Files (x86)\Microsoft Visual Studio 14.0\Common7\IDE\PrivateAssemblies"
+                 @"C:\Program Files (x86)\Microsoft Visual Studio 14.0\Common7\IDE\PublicAssemblies"] 
+              Redirections =
+                [ { AssemblyName = "System.Collections.Immutable"; OldVersion = null }
+                  { AssemblyName = "Microsoft.VisualStudio.ProjectSystem.V14Only"; OldVersion = "14.0.0.0" }
+                ]
+            }
+        write data
+        data
