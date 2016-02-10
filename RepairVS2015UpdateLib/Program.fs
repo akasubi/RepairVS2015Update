@@ -54,18 +54,21 @@ let getProbeDirectories (xdoc: XDocument) =
     |> List.map (fun s -> Path.Combine(vs2015InstallDir, s))
 
 
-let getDependentAssemblies (xdoc: XDocument) =
-    let nameAttrs =
+let getBindingRedirectNewVer (xdoc: XDocument) assemblyIdentity =
+    try
         xdoc.Root
             .Element(XName.Get("runtime"))
             .Element(XName.Get("assemblyBinding", asmBindingNs))
             .Elements(XName.Get("dependentAssembly", asmBindingNs))
-            .Elements(XName.Get("assemblyIdentity", asmBindingNs))
-            .Attributes(XName.Get("name"))
-    nameAttrs |> Seq.map (fun a -> a.Value)
+            .Single(fun e -> e.Element(XName.Get("assemblyIdentity", asmBindingNs))
+                                            .Attribute(XName.Get("name")).Value = assemblyIdentity)
+            .Element(XName.Get("bindingRedirect", asmBindingNs))
+            .Attribute(XName.Get("newVersion"))
+        |> Some
+    with _ -> None
 
 
-let getBindingRedirectNewVer (xdoc: XDocument) assemblyIdentity =
+let addBindingRedirect (xdoc: XDocument) assemblyIdentity =
     try
         xdoc.Root
             .Element(XName.Get("runtime"))
@@ -81,6 +84,7 @@ let getBindingRedirectNewVer (xdoc: XDocument) assemblyIdentity =
 
 type AssemblyInfo =
     { Version: string
+      Culture: string
       PKToken: string }
 
 let getAssemblyInfos (settings: AppSettings.AppSettingsData) assemblyDirectories =
@@ -95,10 +99,11 @@ let getAssemblyInfos (settings: AppSettings.AppSettingsData) assemblyDirectories
         [for r in settings.Redirections ->
             match loadAsm r.AssemblyName with
             | Some asm ->
-                let matches = Regex.Match(asm.FullName, ".*Version=([^,]*),.*PublicKeyToken=(.*)")
+                let matches = Regex.Match(asm.FullName, ".*Version=([^,]*),.*Culture=([^,]*),.*PublicKeyToken=(.*)")
                 let ver = matches.Groups.[1].Value
-                let pkToken = matches.Groups.[2].Value
-                (r, Some { Version = ver; PKToken = pkToken })
+                let culture = matches.Groups.[2].Value
+                let pkToken = matches.Groups.[3].Value
+                (r, Some { Version = ver; Culture = culture; PKToken = pkToken })
             | None -> (r, None)
         ]
     asmInfos
@@ -149,7 +154,6 @@ let determineRedirectChanges (cfgXdoc: XDocument) settings =
                   Action = action }
     ]
 
-
 let applyBindingRedirectChanges cfgFullPath (cfgXdoc: XDocument) (changes: BindingRedirectChange list) =
     let rec bakFName n =
         if not (File.Exists(cfgFullPath + ".bak")) then cfgFullPath + ".bak"
@@ -161,7 +165,22 @@ let applyBindingRedirectChanges cfgFullPath (cfgXdoc: XDocument) (changes: Bindi
 
     for change in changes do
         match change.Action with
-        | Add -> ()
+        | Add ->
+            let depAsm = XElement(XName.Get("dependentAssembly", asmBindingNs))
+            let asmId = XElement(XName.Get("assemblyIdentity", asmBindingNs))
+            asmId.SetAttributeValue(XName.Get("name"), change.Redirection.AssemblyName)
+            asmId.SetAttributeValue(XName.Get("publicKeyToken"), change.AssemblyInfo.Value.PKToken)
+            asmId.SetAttributeValue(XName.Get("culture"), change.AssemblyInfo.Value.Culture)
+            let redir = XElement(XName.Get("bindingRedirect", asmBindingNs))
+            redir.SetAttributeValue(XName.Get("oldVersion"), change.Redirection.OldVersion)
+            redir.SetAttributeValue(XName.Get("newVersion"), change.AssemblyInfo.Value.Version)
+            depAsm.Add(asmId, redir)
+
+            cfgXdoc.Root
+                   .Element(XName.Get("runtime"))
+                   .Element(XName.Get("assemblyBinding", asmBindingNs))
+                   .Add(depAsm)
+
         | Modify ->
             change.NewVersionAttr.Value.Value <- change.AssemblyInfo.Value.Version            
         | Ignore _ -> ()
@@ -216,8 +235,18 @@ let editSettingsFile _ =
     |> ignore
 
 
-let openStackOverflowPage _ =
+let viewStackOverflowPage _ =
     System.Diagnostics.Process.Start("http://stackoverflow.com/questions/31547947/packages-not-loading-after-installing-visual-studio-2015-rtm")
+    |> ignore
+
+
+let viewTihonsBlogPage _ =
+    System.Diagnostics.Process.Start("https://sergeytihon.wordpress.com/2015/12/01/how-to-restore-viual-studio-2015-after-update-1-dependency-dance")
+    |> ignore
+
+
+let viewHelp _ =
+    System.Diagnostics.Process.Start("https://github.com/wezeku/RepairVS2015Update/blob/master/README.md")
     |> ignore
 
 
@@ -255,12 +284,7 @@ let createUI (icon: Icon) cfgFullPath cfgXdoc =
 
     let mutable bindingRedirectChanges = []
     let loadSettings _ =
-        let asmNames = getDependentAssemblies cfgXdoc
-        let settings: AppSettings.AppSettingsData =
-            { Redirections =
-                [for i in asmNames -> { AssemblyName = i; OldVersion = null } ]
-            }
-//        let settings = AppSettings.read()
+        let settings = AppSettings.read()
         bindingRedirectChanges <- determineRedirectChanges cfgXdoc settings
         let list = assemblyDisplayList cfgXdoc bindingRedirectChanges
         listView.ItemsSource <- list
@@ -274,7 +298,9 @@ let createUI (icon: Icon) cfgFullPath cfgXdoc =
     addButton (fun _ -> applyFixes cfgFullPath cfgXdoc bindingRedirectChanges window) 
               "_Apply binding redirection fixes and delete ComponentModelCache"
     controlStack.Children.Add(Rectangle(Fill = Media.Brushes.Black, Height = 2., Margin = spacing)) |> ignore
-    addButton openStackOverflowPage "Open _Stackoverflow question about this problem"
+    addButton viewTihonsBlogPage "View Sergey _Tihons blog post about trouble shooting this problem"
+    addButton viewStackOverflowPage "View _Stackoverflow question about this problem"
+    addButton viewHelp "View _Help page"
 
     window
 
