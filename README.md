@@ -1,6 +1,13 @@
 RepairVS2015Update
 ==================
 
+Update: This utility is obsolete!
+---------------------------------
+The *"The 'package name' package did not load correctly"* problem has been solved
+by MS. Ironically, it seems it was already solved before I uploaded this utility
+on GitHub. Nevertheless, I'm leaving the repo here as an example of a quick&dirty
+WPF program written entirely in F# with no XAML at all.
+
 What it does
 ------------
 
